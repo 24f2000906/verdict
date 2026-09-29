@@ -1,0 +1,10 @@
+thought.md
+folder-structure.md
+.env
+commands.txt
+data
+
+frontend/.next
+frontend/node_modules
+
+backend/venv

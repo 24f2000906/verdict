@@ -1,0 +1,49 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ./data/ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  chroma:
+    image: chromadb/chroma:latest
+    volumes:
+      - ./data/chroma:/data
+    ports:
+      - "8000:8000"
+
+  backend:
+    build: ./backend
+    container_name: verdict-backend
+    depends_on:
+      - ollama
+      - chroma
+    ports:
+      - "7000:7000"
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+      - ./corpus:/corpus
+    command: uvicorn app.main:app --host 0.0.0.0 --port 7000 --reload
+
+  frontend:
+    build: ./frontend
+    container_name: verdict-frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
