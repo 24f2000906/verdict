@@ -2,17 +2,19 @@ from fastapi import FastAPI
 from app.api.routes import ask
 from app.api.routes import test
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-import os
-load_dotenv()
+from app.core.config import settings
+import warnings
 
-FRONTEND_URL = os.getenv("FRONTEND_URL")
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning
+)
 
 app = FastAPI(title="Verdict API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        FRONTEND_URL,
+        settings.frontend_url,
     ],
     allow_credentials=True,
     allow_methods=["*"],

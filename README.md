@@ -1,182 +1,185 @@
-# ⚖️ Verdict — Indian AI Lawyer
+# ⚖️ Verdict - AI Lawyer
 
-Verdict answers plain-language questions about Indian law and shows the exact provisions it relied on. Every answer is checked against the passages that were actually retrieved before it reaches the user.
+**Verdict** is a retrieval-augmented legal research assistant for Indian law. Ask a question in plain language and get a concise answer grounded in the actual text of statutes, with every claim tied to a specific Act and section.
 
-> **Disclaimer:** Verdict is a legal *research* aid, not a lawyer. Its answers are not legal advice. Always confirm with the primary text or a qualified advocate.
+Unlike a general-purpose chatbot, Verdict answers **only from the provisions it retrieves**, then runs a verification step that checks every citation and section reference in the answer against those sources. If something can't be verified, the answer is flagged. If the corpus has no answer, Verdict says so instead of guessing.
 
----
-
-## Table of contents
-
-- [Features](#features)
-- [How it works](#how-it-works)
-- [Tech stack](#tech-stack)
-- [Repository structure](#repository-structure)
-- [Getting started](#getting-started)
-- [Configuration](#configuration)
-- [Building the knowledge base](#building-the-knowledge-base)
-- [API reference](#api-reference)
-- [Frontend](#frontend)
-- [Current status and limitations](#current-status-and-limitations)
-- [Roadmap](#roadmap)
+> ⚠️ **Disclaimer:** Verdict is a research aid, not legal advice. Always confirm against the official text of the law and consult a qualified advocate for legal matters.
 
 ---
 
 ## Features
 
-- **Grounded answers.** The model is instructed to answer only from retrieved context and to cite the passage behind every sentence.
-- **Citation verification.** A verifier step compares every citation in the draft against the retrieved passages and labels the result `verified`, `unverified` or `flagged`.
-- **Automatic retry.** If a citation cannot be matched to a retrieved source, the answer is regenerated once with a correction note before being returned.
-- **Fully local AI.** LLM and embeddings run on [Ollama](https://ollama.com); vectors live in [ChromaDB](https://www.trychroma.com). No third-party AI API is required.
-- **Dark-only, animated frontend** built with Next.js App Router, with a landing page and a chat-style `/ask` page.
+- **Grounded answers**: the model is instructed to use only the retrieved sources and cite them inline.
+- **Citation verification**: a dedicated node checks citation tags and any `section`/`article` mentioned in the answer against the retrieved provisions.
+- **Self-correcting retry**: flagged or uncited answers are regenerated once, with feedback about what went wrong.
+- **Honest "not found"**: if nothing relevant is retrieved (or the model can't answer from the sources), the user gets a clear message instead of a hallucination.
+- **Structured responses**: the API returns the answer, a list of citations (act, section, excerpt) and a `verification_status`.
+- **Response caching**: verified answers are cached in memory for repeat questions.
+- **Fully containerised**: one `docker compose up` starts the vector DB, API and web app.
 
-## How it works
+## Corpus
+
+The index is built from 12 statutes:
+
+| File | Act | Year |
+| :--- | :--- | :--- |
+| `bns.jsonl` | Bharatiya Nyaya Sanhita | 2023 |
+| `bnss.jsonl` | Bharatiya Nagarik Suraksha Sanhita | 2023 |
+| `bsa.jsonl` | Bharatiya Sakshya Adhiniyam | 2023 |
+| `coi.jsonl` | Constitution of India | 1950 (as amended) |
+| `cpc.jsonl` | Code of Civil Procedure | 1908 |
+| `crpc.jsonl` | Code of Criminal Procedure | 1973 |
+| `hma.jsonl` | Hindu Marriage Act | 1955 |
+| `ida.jsonl` | Indian Divorce Act | 1869 |
+| `iea.jsonl` | Indian Evidence Act | 1872 |
+| `ipc.jsonl` | Indian Penal Code | 1860 |
+| `mva.jsonl` | Motor Vehicles Act | 1988 |
+| `nia.jsonl` | Negotiable Instruments Act | 1881 |
+
+## Architecture
 
 ```
-                ┌──────────────────────────── LangGraph ────────────────────────────┐
- Question ───►  │  retrieve  ───►  synthesize  ───►  verify ──┬─► done (final answer)│ ───► Answer
- (POST /ask)    │  (top-4 via      (Ollama LLM,      (citation │                     │      + citations
-                │   Chroma)         cited draft)      check)   └─► flagged? retry ───┘      + status
-                └───────────────────────────────────────────────────────────────────┘
-                                          ▲ (max 1 retry)
+┌──────────────┐   POST /ask    ┌─────────────────────────────────────────┐
+│  Next.js UI  │ ─────────────▶ │              FastAPI backend            │
+│  (port 3000) │ ◀───────────── │               (port 7000)               │
+└──────────────┘  answer +      │                                         │
+                  citations     │   LangGraph pipeline                    │
+                                │   ┌──────────┐  ┌────────────┐  ┌──────┐│
+                                │   │ retrieve │─▶│ synthesize │─▶│verify││
+                                │   └──────────┘  └─────▲──────┘  └──┬───┘│
+                                │                       └── retry ◀──┘    │
+                                └───────────┬─────────────────────────────┘
+                                            │ similarity search
+                                     ┌──────▼──────┐
+                                     │  ChromaDB   │
+                                     │ (port 8000) │
+                                     └─────────────┘
 ```
 
-1. **Retrieve** – embeds the question and fetches the 4 most similar chunks from Chroma.
-2. **Synthesize** – prompts the LLM to paraphrase the context and end every sentence with a tag such as `[Constitution | 21]`. If nothing in the context answers the question, it must say so and cite nothing.
-3. **Verify** – extracts every `[source | section]` tag from the draft and checks it against the retrieved chunks.
-   - all tags match → `verified`
-   - no tags → `unverified`
-   - any tag not in the retrieved set → `flagged` (a warning is prepended, and the graph loops back to *synthesize* once, telling the model which citations were invalid)
+### The pipeline (LangGraph)
+
+1. **Retrieve**: fetches the top candidates from ChromaDB, discards anything beyond a distance threshold, and keeps the best matches (deterministically ordered).
+2. **Synthesize**: prompts the LLM to answer using *only* the numbered sources, tag each statement (`[D1]`, `[D2]`, …), and reply `NOT_FOUND` if the sources don't cover the question.
+3. **Verify**: confirms every tag maps to a real retrieved source and every mentioned section/article exists in those sources. Tags are rewritten into readable references such as `[IPC 302]`, and a citation list is built. The result is one of:
+   - `verified`: all references check out
+   - `flagged`: unsupported references found (the answer is shown with a warning)
+   - `unverified`: no citations were produced
+   - `not_found`: nothing relevant in the corpus
+
+   `flagged` and `unverified` answers are sent back to **Synthesize** for one retry before the response is returned.
 
 ## Tech stack
 
 | Layer | Technology |
-| --- | --- |
-| Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4, Motion, lucide-react |
+| :--- | :--- |
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4, Motion, Lucide |
 | Backend | Python 3.13, FastAPI, Uvicorn, Pydantic |
-| Orchestration | LangGraph, LangChain (`langchain-ollama`, `langchain-chroma`) |
-| LLM + embeddings | Ollama (models set via env vars) |
+| Orchestration | LangChain, LangGraph, LangSmith |
+| Models | NVIDIA AI Endpoints (chat + embeddings) via `langchain-nvidia-ai-endpoints` |
 | Vector store | ChromaDB |
-| Ingestion | pypdf + regex-based article chunker |
-| Infra | Docker Compose |
+| Infrastructure | Docker, Docker Compose |
 
-## Repository structure
+## Project structure
 
 ```
 verdict/
-├── docker-compose.yml          # ollama + chroma + backend + frontend
-├── .env                        # you create this (see Configuration)
+├── docker-compose.yml
+├── thought.md                     # dataset notes & roadmap
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py             # FastAPI app, CORS, router registration
+│       ├── main.py                # FastAPI app, CORS, routers
+│       ├── ingestion.py           # Index prepared chunks into ChromaDB
 │       ├── api/routes/
-│       │   ├── ask.py          # POST /ask  — runs the LangGraph pipeline
-│       │   └── test.py         # POST /test — smoke-test route
+│       │   ├── ask.py             # POST /ask: runs the graph, caches results
+│       │   └── test.py            # POST /test: raw LLM sanity check
 │       ├── core/
-│       │   ├── config.py       # settings loaded from env
-│       │   └── llm.py          # ChatOllama factory (temp 0.1, 8k ctx)
-│       ├── db/vectorstore.py   # Chroma + Ollama embeddings client
+│       │   ├── config.py          # Settings loaded from environment
+│       │   └── llm.py             # Chat model factory
+│       ├── db/vectorstore.py      # Chroma + embeddings client
 │       ├── graph/
-│       │   ├── graph.py        # StateGraph wiring + retry routing
-│       │   ├── state.py        # GraphState definition
-│       │   └── node/           # retriever.py, synthesizer.py, verifier.py
-│       ├── ingestion/          # parser.py, chunker.py, indexer.py, build.py
-│       └── models/schemas.py   # AskRequest / AskResponse / Citation
+│       │   ├── graph.py           # Graph wiring and retry routing
+│       │   ├── state.py           # Shared graph state
+│       │   └── node/              # retriever / synthesizer / verifier
+│       └── models/
+│           ├── schemas.py         # Request/response models
+│           └── prepare_corpus.py  # Convert raw legal files → chunks
+|
 ├── corpus/
-│   ├── raw/constitution.pdf    # source document
-│   └── processed/constitution_chunks.json   # 437 article-level chunks
+|   └──chunks/
+|      ├── bns.jsonl
+|      ├── coi.jsonl
+|      └── other jsonl files (core data)
+|
 └── frontend/
     ├── Dockerfile
-    ├── package.json
     └── app/
-        ├── layout.tsx          # fonts (Instrument Serif, Geist), dark theme
-        ├── globals.css         # design tokens (ink, panel, ivory, brass, chakra)
-        ├── page.tsx            # animated landing page
-        └── ask/page.tsx        # chat UI with citations + verification badge
+        ├── page.tsx               # Landing page
+        ├── ask/page.tsx           # Question & answer interface
+        ├── layout.tsx
+        └── globals.css
 ```
 
 ## Getting started
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- An **NVIDIA GPU** with the NVIDIA Container Toolkit (the `ollama` service reserves one GPU in `docker-compose.yml`). On a machine without a GPU, remove the `deploy:` block from the `ollama` service; it will run on CPU, more slowly.
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
+- An NVIDIA API key with access to a chat model and an embedding model ([build.nvidia.com](https://build.nvidia.com))
+- The raw legal dataset files (see [Corpus](#corpus))
 
-### 1. Create `.env` in the project root
+### 1. Configure environment variables
+
+Create a `.env` file in the project root:
 
 ```env
 # Backend
-OLLAMA_URL=http://ollama:11434
-TEXT_MODEL=<an Ollama chat model, e.g. one you have pulled>
-EMBEDDING_MODEL=<an Ollama embedding model>
 FRONTEND_URL=http://localhost:3000
+TEXT_MODEL=<nvidia-chat-model-name>
+TEXT_MODEL_API_KEY=<your-nvidia-api-key>
+EMBEDDING_MODEL=<nvidia-embedding-model-name>
+EMBEDDING_MODEL_API_KEY=<your-nvidia-api-key>
 
-# Frontend (must be the full URL of the /ask endpoint, as seen from the browser)
-NEXT_PUBLIC_BACKEND_URL=http://localhost:7000/ask
+# Frontend
+NEXT_PUBLIC_BACKEND_URL=http://localhost:7000
 ```
 
-### 2. Start the stack
+### 2. Add the corpus
+
+Place the raw statute files in `./corpus/raw/`. The compose file mounts `./corpus` into the backend container at `/corpus`.
+
+### 3. Start the stack
 
 ```bash
 docker compose up --build
 ```
 
 | Service | URL |
-| --- | --- |
-| Frontend | http://localhost:3000 |
-| Backend (FastAPI) | http://localhost:7000 — interactive docs at `/docs` |
-| Chroma | http://localhost:8000 |
-| Ollama | http://localhost:11434 |
+| :--- | :--- |
+| Web app | http://localhost:3000 |
+| API | http://localhost:7000 |
+| API docs (Swagger) | http://localhost:7000/docs |
+| ChromaDB | http://localhost:8000 |
 
-### 3. Pull the models into Ollama
+### 4. Build and load the index
 
-```bash
-docker compose exec ollama ollama pull <TEXT_MODEL>
-docker compose exec ollama ollama pull <EMBEDDING_MODEL>
-```
-
-### 4. Build the knowledge base (first run only)
+With the stack running, convert the raw files into chunks and index them:
 
 ```bash
-docker compose exec backend python -m app.ingestion.build --reset
+# Normalise raw files into the chunk schema
+docker compose exec backend python -m app.models.prepare_corpus \
+  --raw /corpus/raw --out /corpus/chunks
+
+# (Optional) dry run: count chunks without indexing
+docker compose exec backend python -m app.ingestion --dir /corpus/chunks --dry-run
+
+# Embed and index (use --reset to wipe the existing collection first)
+docker compose exec backend python -m app.ingestion --dir /corpus/chunks --reset
 ```
 
-Then open http://localhost:3000 and ask a question.
-
-## Configuration
-
-| Variable | Used by | Description |
-| --- | --- | --- |
-| `OLLAMA_URL` | backend | Base URL of the Ollama server |
-| `TEXT_MODEL` | backend | Ollama model used to write answers |
-| `EMBEDDING_MODEL` | backend | Ollama model used for embeddings (must be the same for indexing and querying) |
-| `FRONTEND_URL` | backend | Allowed CORS origin |
-| `NEXT_PUBLIC_BACKEND_URL` | frontend | Full URL of the `POST /ask` endpoint |
-
-Fixed in code (`backend/app/core/config.py`): Chroma host `chroma`, port `8000`, collection `verdict_embeddings`.
-
-## Building the knowledge base
-
-The ingestion pipeline lives in `backend/app/ingestion/`:
-
-1. **Parse** – `pypdf` extracts text from `corpus/raw/constitution.pdf`, then whitespace is normalised.
-2. **Chunk** – a regex detects article headings (`21. Protection of life…—`), rejects false positives by requiring article numbers to increase monotonically, tags each chunk with its **Part**, and splits anything over 3,500 characters. Each chunk carries `source`, `article`, `title` and `part` metadata.
-3. **Index** – chunks are embedded and written to Chroma in batches of 32.
-
-```bash
-# Full run: parse, save chunks JSON, embed and index (wipe the collection first)
-docker compose exec backend python -m app.ingestion.build --reset
-
-# Parse and inspect chunks only, skip indexing
-docker compose exec backend python -m app.ingestion.build --dry-run
-
-# Custom input/output
-docker compose exec backend python -m app.ingestion.build --pdf /corpus/raw/constitution.pdf --out /corpus/processed/constitution_chunks.json
-```
-
-To add a new law, drop its PDF in `corpus/raw/`, write a chunker that emits the same `{id, content, metadata}` shape (with a distinct `source`), and index it. The synthesizer and verifier already key citations on `source` + `article`/`section` metadata.
+Open http://localhost:3000 and start asking questions.
 
 ## API reference
 
@@ -185,65 +188,72 @@ To add a new law, drop its PDF in `corpus/raw/`, write a chunker that emits the 
 **Request**
 
 ```json
-{ "question": "Explain Article 21 of the Constitution" }
+{
+  "question": "What is the punishment for cheating under the BNS?",
+  "session_id": null
+}
 ```
-
-`session_id` is accepted but currently unused.
 
 **Response**
 
 ```json
 {
-  "answer": "Article 21 protects life and personal liberty … [Constitution | 21]",
+  "answer": "Cheating is punishable with ... [BNS 318]",
   "citations": [
-    { "source": "Constitution", "section": "21", "excerpt": "Article 21. Protection of life and personal liberty …" }
+    {
+      "source": "Bharatiya Nyaya Sanhita, 2023",
+      "section": "318",
+      "excerpt": "Bharatiya Nyaya Sanhita, 2023 (BNS) - Section 318: ..."
+    }
   ],
   "verification_status": "verified"
 }
 ```
 
-| `verification_status` | Meaning |
-| --- | --- |
-| `verified` | Every citation matched a retrieved passage |
-| `unverified` | The answer contained no citations |
-| `flagged` | At least one citation was not in the retrieved set, even after one retry; the answer is prefixed with a warning |
+`verification_status` is one of `verified`, `flagged`, `unverified` or `not_found`. The API returns `503` if the model backend fails or is overloaded.
 
-### Other routes
+> `session_id` is accepted but not used yet. See the roadmap.
 
-- `GET /` – health check
-- `POST /test` – smoke test
+### `POST /test`
 
-## Frontend
+Sends `question` straight to the LLM (no retrieval) and returns `{"Answer": "..."}`. Useful for checking that your model credentials work.
 
-- **`/`** – animated landing page: parallax hero, scroll-reveal sections, sample Q&A, list of supported laws.
-- **`/ask`** – chat interface with sample prompts, animated messages, a verification badge (green for verified, amber otherwise) and a citations panel.
-- Dark theme only; palette tokens (`ink`, `panel`, `ivory`, `brass`, `chakra`) are defined in `app/globals.css`.
+## Local development
 
-Run it outside Docker:
+Both services run with hot reload in Docker (the source directories are mounted as volumes). To run outside Docker:
 
 ```bash
+# Backend
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 7000
+
+# Frontend
 cd frontend
 npm install
-NEXT_PUBLIC_BACKEND_URL=http://localhost:7000/ask npm run dev
+npm run dev
 ```
 
-## Current status and limitations
+When running the backend outside Docker, set `chroma_host` in `app/core/config.py` to `localhost` (it defaults to the Docker service name `chroma`).
 
-- **Only the Constitution is indexed** (437 chunks). The landing page mentions BNS, BNSS, BSA and other Acts; their text has not been ingested yet, so questions about them will not be answered from source material.
-- Retrieval is plain top-4 similarity search with no re-ranking or query classification (`query_type` exists in the graph state but is unused).
-- The verifier checks that a citation *exists* in the retrieved set; it does not check that the sentence actually follows from the cited text.
-- No conversation memory (`session_id` is not used) and no streaming; each question is answered independently.
-- The Ollama service is configured for an NVIDIA GPU by default.
-- The `/test` route is a leftover smoke test and can be removed before deployment.
+## Tuning
+
+Retrieval and verification behaviour is controlled by a few constants:
+
+| Constant | File | Meaning |
+| :--- | :--- | :--- |
+| `FETCH_K` / `KEEP_K` | `graph/node/retriever.py` | Candidates fetched vs. passages passed to the LLM |
+| `MAX_DIST` | `graph/node/retriever.py` | Maximum vector distance for a passage to count as relevant |
+| `MAX_RETRIES` | `graph/graph.py` | Regeneration attempts after a failed verification |
+| `MAX_CHARS` | `models/prepare_corpus.py` | Maximum chunk size before a section is split |
 
 ## Roadmap
 
-- Ingest BNS, BNSS, BSA and the remaining Acts listed on the landing page
-- Add a query-classification step to route questions to the right corpus
-- Stronger verification (claim-to-passage entailment check)
-- Conversation history and streaming responses
-- Automated tests and CI
+- [ ] **Conversation memory**: session management and multi-turn context (summary / windowed memory)
+- [ ] **Redis caching**: cache embeddings, retrieval results and session history
+- [ ] **Reasoning mode**: enable model thinking for complex, multi-step statutory cross-referencing
+- [ ] **Document upload**: parse PDF/DOCX/TXT briefs and filings for analysis
 
-## License
+## Contributing
 
-No license file is included yet. Add one before publishing.
+Issues and pull requests are welcome. For larger changes, please open an issue first to discuss what you'd like to change.

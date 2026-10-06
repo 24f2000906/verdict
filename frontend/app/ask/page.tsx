@@ -4,9 +4,14 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowUp, BadgeCheck, Loader2, TriangleAlert, Scale, Home } from "lucide-react";
 import Link from "next/link";
 
-const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
-type Reply = { answer: string; citations: string | string[]; verification_status: string };
+type Reply = {
+  answer: string;
+  citations: Citation[] | string[] | string;
+  verification_status: string;
+};
 type Msg = { role: "user"; text: string } | { role: "ai"; data: Reply } | { role: "error"; text: string };
+type Citation = { source: string; section?: string; excerpt?: string };
+
 
 const samples = [
   "What are my rights if I am arrested?",
@@ -26,6 +31,19 @@ function Verification({ status }: { status: string }) {
   );
 }
 
+function normalizeCitations(raw: Reply["citations"]): Citation[] {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : raw.split(/\n|;/);
+  return arr
+    .map((c): Citation | null => {
+      if (typeof c === "string") {
+        return c.trim() ? { source: c.trim() } : null;
+      }
+      return c && c.source ? c : null;
+    })
+    .filter((c): c is Citation => c !== null);
+}
+
 export default function Ask() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [q, setQ] = useState("");
@@ -42,7 +60,7 @@ export default function Ask() {
     setQ("");
     setBusy(true);
     try {
-      const res = await fetch(API, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: question, question }),
@@ -52,7 +70,7 @@ export default function Ask() {
       console.log(data)
       setMsgs((m) => [...m, { role: "ai", data }]);
     } catch (e) {
-      setMsgs((m) => [...m, { role: "error", text: `Could not reach the Verdict server at ${API}. Check that it is running and allows requests from this site. (${(e as Error).message})` }]);
+      setMsgs((m) => [...m, { role: "error", text: `Could not reach the Verdict server at this moment. We are trying to reconenct. Please try again after few seconds. (${(e as Error).message})` }]);
     } finally {
       setBusy(false);
     }
@@ -61,17 +79,17 @@ export default function Ask() {
   return (
     <div className="mx-auto flex min-h-screen w-3/5 flex-col px-5 pt-24">
       <div className="flex justify-center">
-          <header className="fixed top-3 z-50 border-2 border-brass bg-ink/50 backdrop-blur-xl w-3/5 rounded-2xl ">
-            <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
-              <Link href="/" className="flex items-center gap-2 font-serif text-2xl">
-                <Scale className="size-7 text-brass" /> Verdict
-              </Link>
-              <Link href="/" className="flex items-center gap-1 text-sm rounded-full bg-brass px-5 py-2 font-medium text-ink transform duration-300 hover:scale-105">
-                <Home className="size-4" /> Home
-              </Link>
-            </nav>
-          </header>
-        </div>
+        <header className="fixed top-3 z-50 border-2 border-brass bg-ink/50 backdrop-blur-xl w-3/5 rounded-2xl ">
+          <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
+            <Link href="/" className="flex items-center gap-2 font-serif text-2xl">
+              <Scale className="size-7 text-brass" /> Verdict
+            </Link>
+            <Link href="/" className="flex items-center gap-1 text-sm rounded-full bg-brass px-5 py-2 font-medium text-ink transform duration-300 hover:scale-105">
+              <Home className="size-4" /> Home
+            </Link>
+          </nav>
+        </header>
+      </div>
       <div className="flex-1 space-y-8 pb-40">
         {msgs.length === 0 && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="pt-10">
@@ -89,35 +107,34 @@ export default function Ask() {
             <motion.div key={i} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
               {m.role === "user" && <p className="ml-auto w-fit max-w-[85%] rounded-3xl bg-white/8 px-5 py-3">{m.text}</p>}
               {m.role === "error" && <p className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-red-300">{m.text}</p>}
-              {m.role === "ai" && (
-                <div className="rounded-3xl border border-white/10 bg-panel p-6">
-                  <Verification status={m.data.verification_status} />
-                  <p className="mt-4 whitespace-pre-wrap text-lg leading-relaxed">{m.data.answer}</p>
-                  {m.data.citations?.length > 0 && (
-                    <div className="mt-6 rounded-xl bg-white/5 p-4">
-                      <p className="text-sm text-ivory/50">Citations</p>
-                      <ul className="mt-2 space-y-1 text-ivory/85">
-                        {/* {(Array.isArray(m.data.citations) ? m.data.citations : m.data.citations.split(/\n|;/)).filter((c) => c.trim()).map((c, j) => (
-                          <li key={j} className="border-l-2 border-brass/60 pl-3">{c.trim()}</li>
-                        ))} */}
-                        {(
-                          Array.isArray(m.data.citations)
-                            ? m.data.citations
-                            : typeof m.data.citations === "string"
-                              ? m.data.citations.split(/\n|;/)
-                              : []
-                        )
-                          .filter((c) => typeof c === "string" && c.trim())
-                          .map((c, j) => (
+              {m.role === "ai" &&
+                (() => {
+                  const cites = normalizeCitations(m.data.citations);
+                  if (cites.length === 0) return null;
+                  return (
+                    <div className="rounded-3xl border border-white/10 bg-panel p-6">
+                      <Verification status={m.data.verification_status} />
+                      <p className="mt-4 whitespace-pre-wrap text-lg leading-relaxed">{m.data.answer}</p>
+                      <div className="mt-6 rounded-xl bg-white/5 p-4">
+                        <p className="text-sm text-ivory/50">Citations</p>
+                        <ul className="mt-2 space-y-3 text-ivory/85">
+                          {cites.map((c, j) => (
                             <li key={j} className="border-l-2 border-brass/60 pl-3">
-                              {c.trim()}
+                              <p className="font-medium">
+                                {c.source}
+                                {c.section && <span className="text-brass"> · Section {c.section}</span>}
+                              </p>
+                              {c.excerpt && (
+                                <p className="mt-1 line-clamp-3 text-sm text-ivory/60">{c.excerpt}</p>
+                              )}
                             </li>
                           ))}
-                      </ul>
+                        </ul>
+                      </div>
                     </div>
-                  )}
-                </div>
-              )}
+                  );
+                })()
+              }
             </motion.div>
           ))}
         </AnimatePresence>

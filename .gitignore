@@ -8,3 +8,9 @@ frontend/.next
 frontend/node_modules
 
 backend/venv
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+verdict.zip

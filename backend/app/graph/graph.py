@@ -7,7 +7,7 @@ from app.graph.node.verifier import verifier_node
 MAX_RETRIES = 1
 
 def route_after_verify(state: GraphState) -> str:
-    if state["verification_status"] == "flagged" and state["retry_count"] <= MAX_RETRIES:
+    if state["verification_status"] in ("flagged", "unverified") and state["retry_count"] <= MAX_RETRIES:
         return "synthesize"
     return END
 

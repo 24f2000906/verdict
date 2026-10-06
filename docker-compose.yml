@@ -1,18 +1,4 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ./data/ollama:/root/.ollama
-    ports:
-      - "11434:11434"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
   chroma:
     image: chromadb/chroma:latest
     volumes:
@@ -24,7 +10,6 @@ services:
     build: ./backend
     container_name: verdict-backend
     depends_on:
-      - ollama
       - chroma
     ports:
       - "7000:7000"

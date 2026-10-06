@@ -1,7 +1,7 @@
 langchain
 langchain-core
 langchain-community
-langchain-ollama
+langchain-nvidia-ai-endpoints
 langchain-chroma
 
 fastapi
@@ -9,7 +9,6 @@ uvicorn[standard]
 langgraph
 langsmith
 chromadb
-pypdf
 python-multipart
 python-dotenv
 pydantic-settings
