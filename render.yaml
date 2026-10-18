@@ -1,40 +1,90 @@
 services:
-  # 1. ChromaDB Vector Database
-  - type: web
+  # ---------------------------------------------------------------
+  # ChromaDB: private service (only reachable from your other
+  # Render services, not the public internet)
+  # ---------------------------------------------------------------
+  - type: pserv
     name: verdict-chroma
-    env: docker
-    dockerfilePath: ./chroma/Dockerfile # Create a minimal Dockerfile for chroma if needed, or use the public image directly
-    plan: free
-    region: singapore # Change to the region closest to you (e.g., ohio, frankfurt, Oregon)
+    runtime: image
+    image:
+      url: docker.io/chromadb/chroma:latest   # consider pinning a version tag
+    plan: starter                              # persistent disks need a paid plan
+    envVars:
+      - key: IS_PERSISTENT
+        value: "TRUE"
+      - key: PERSIST_DIRECTORY
+        value: /data
+      - key: ANONYMIZED_TELEMETRY
+        value: "FALSE"
+    disk:
+      name: chroma-data
+      mountPath: /data
+      sizeGB: 5
 
-  # 2. FastAPI Backend
+  # ---------------------------------------------------------------
+  # Backend: FastAPI
+  # ---------------------------------------------------------------
   - type: web
     name: verdict-backend
-    env: docker
+    runtime: docker
     dockerfilePath: ./backend/Dockerfile
-    plan: free
-    region: singapore
+    dockerContext: ./backend
+    # No --reload in production
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port 7000
+    plan: starter
+    healthCheckPath: /docs        # change to your own health endpoint if you have one
     envVars:
+      - key: PORT
+        value: "7000"
+
+      # Chroma wiring (internal network). Adjust key names to match your code.
       - key: CHROMA_HOST
         fromService:
-          type: web
+          type: pserv
           name: verdict-chroma
           property: host
       - key: CHROMA_PORT
         value: "8000"
-      - key: NVIDIA_API_KEY
-        sync: false # Render will prompt you to input this securely in your dashboard
 
-  # 3. Frontend
+      # CORS / links back to the frontend
+      - key: FRONTEND_URL
+        value: https://verdict-frontend.onrender.com   # update if Render assigns a different URL
+
+      # LangSmith
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: LANGSMITH_TRACING_V2
+        value: "false"
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: verdict
+
+      # Models
+      - key: TEXT_MODEL
+        value: nvidia/nemotron-3-ultra-550b-a55b
+      - key: TEXT_MODEL_API_KEY
+        sync: false
+      - key: EMBEDDING_MODEL
+        value: nvidia/nemotron-3-embed-1b
+      - key: EMBEDDING_MODEL_API_KEY
+        sync: false
+
+  # ---------------------------------------------------------------
+  # Frontend: Next.js
+  # ---------------------------------------------------------------
   - type: web
     name: verdict-frontend
-    env: docker
+    runtime: docker
     dockerfilePath: ./frontend/Dockerfile
-    plan: free
-    region: singapore
+    dockerContext: ./frontend
+    plan: starter
     envVars:
+      - key: PORT
+        value: "3000"
+      # NEXT_PUBLIC_* values are inlined at build time, so this must be the
+      # backend's PUBLIC URL (not the internal hostname).
       - key: NEXT_PUBLIC_BACKEND_URL
-        fromService:
-          type: web
-          name: verdict-backend
-          property: host
+        value: https://verdict-backend.onrender.com    # update if Render assigns a different URL
+      - key: FRONTEND_URL
+        value: https://verdict-frontend.onrender.com
