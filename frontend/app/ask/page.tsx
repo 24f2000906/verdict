@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUp, BadgeCheck, Loader2, TriangleAlert, Scale, Home } from "lucide-react";
 import Link from "next/link";
+import ReactMarkdown from 'react-markdown';
 
 type Reply = {
   answer: string;
@@ -162,18 +163,22 @@ export default function Ask() {
                   return (
                     <div className="rounded-3xl border border-white/10 bg-panel p-6">
                       <Verification status={m.data.verification_status} />
-                      <p className="mt-4 whitespace-pre-wrap text-lg leading-relaxed">{m.data.answer}</p>
-                      <div className="mt-6 rounded-xl bg-white/5 p-4">
-                        <p className="text-sm text-ivory/50">Citations</p>
-                        <ul className="mt-2 space-y-3 text-ivory/85">
+                      <div className="mt-4 whitespace-pre-wrap text-lg leading-relaxed text-white ">
+                        <ReactMarkdown>
+                          {m.data.answer}
+                        </ReactMarkdown>
+                      </div>
+                      <div className="mt-6 rounded-xl bg-brass p-4 text-panel">
+                        <p className="text-sm bg-panel text-brass w-max rounded-2xl px-3 py-1">Citations</p>
+                        <ul className="mt-2 space-y-3">
                           {cites.map((c, j) => (
-                            <li key={j} className="border-l-2 border-brass/60 pl-3">
-                              <p className="font-medium">
+                            <li key={j} className="border-l-2 border-brass/60">
+                              <p className="font-bold">
                                 {c.source}
-                                {c.section && <span className="text-brass"> · Section {c.section}</span>}
+                                {c.section && <span> · Section {c.section}</span>}
                               </p>
                               {c.excerpt && (
-                                <p className="mt-1 line-clamp-3 text-sm text-ivory/60">{c.excerpt}</p>
+                                <p className="mt-1 line-clamp-3 text-sm">{c.excerpt}</p>
                               )}
                             </li>
                           ))}
