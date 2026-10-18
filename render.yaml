@@ -1,0 +1,40 @@
+services:
+  # 1. ChromaDB Vector Database
+  - type: web
+    name: verdict-chroma
+    env: docker
+    dockerfilePath: ./chroma/Dockerfile # Create a minimal Dockerfile for chroma if needed, or use the public image directly
+    plan: free
+    region: singapore # Change to the region closest to you (e.g., ohio, frankfurt, Oregon)
+
+  # 2. FastAPI Backend
+  - type: web
+    name: verdict-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    plan: free
+    region: singapore
+    envVars:
+      - key: CHROMA_HOST
+        fromService:
+          type: web
+          name: verdict-chroma
+          property: host
+      - key: CHROMA_PORT
+        value: "8000"
+      - key: NVIDIA_API_KEY
+        sync: false # Render will prompt you to input this securely in your dashboard
+
+  # 3. Frontend
+  - type: web
+    name: verdict-frontend
+    env: docker
+    dockerfilePath: ./frontend/Dockerfile
+    plan: free
+    region: singapore
+    envVars:
+      - key: NEXT_PUBLIC_BACKEND_URL
+        fromService:
+          type: web
+          name: verdict-backend
+          property: host

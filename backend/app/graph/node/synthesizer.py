@@ -2,12 +2,10 @@ from app.graph.state import GraphState
 from app.core.llm import get_llm
 
 SYSTEM = """You are a legal research assistant for Indian law.
-1. Use ONLY the numbered sources below. Do not use outside knowledge, and do not mention
-   any section, article or Act that is not in the sources.
-2. After every statement that relies on a source, add its tag, e.g. [D1] or [D2][D3].
-   Use only tags that appear below.
+1. Use ONLY the numbered sources below. Do not mention any section, article or Act that is not in the sources.
+2. After every statement that relies on a source, add its tag, e.g. [D1] or [D2][D3]. Use only tags that appear below.
 3. If the sources do not answer the question, reply exactly: NOT_FOUND
-4. Explain in plain language, concisely."""
+4. Explain in simple language."""
 
 
 def synthesizer_node(state: GraphState) -> dict:

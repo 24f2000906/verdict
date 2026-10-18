@@ -44,11 +44,59 @@ function normalizeCitations(raw: Reply["citations"]): Citation[] {
     .filter((c): c is Citation => c !== null);
 }
 
+const STORAGE_KEY = "verdict:chat-history:v1";
+
+function isMsg(x: unknown): x is Msg {
+  if (!x || typeof x !== "object") return false;
+  const m = x as Record<string, unknown>;
+  if (m.role === "user" || m.role === "error") return typeof m.text === "string";
+  if (m.role === "ai") {
+    const d = m.data as Record<string, unknown> | null | undefined;
+    return !!d && typeof d === "object" && typeof d.answer === "string";
+  }
+  return false;
+}
+
+function loadMsgs(): Msg[] {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isMsg) : [];
+  } catch {
+    return []; // corrupted JSON, or storage blocked (private mode, disabled cookies)
+  }
+}
+
+function saveMsgs(msgs: Msg[]) {
+  try {
+    // Error banners are transient ("could not reach server"), so they are not saved.
+    const toSave = msgs.filter((m) => m.role !== "error");
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+  } catch {
+    // Quota exceeded or storage unavailable: keep the chat working in memory.
+  }
+}
+
 export default function Ask() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const end = useRef<HTMLDivElement>(null);
+
+  // Restore saved history after mount (localStorage doesn't exist during server render).
+  useEffect(() => {
+    setMsgs(loadMsgs());
+    setLoaded(true);
+  }, []);
+
+  // Save on every change, but only after the restore ran, so the initial
+  // empty state can never overwrite saved history.
+  useEffect(() => {
+    if (loaded) saveMsgs(msgs);
+  }, [msgs, loaded]);
+
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs, busy]);
@@ -70,7 +118,7 @@ export default function Ask() {
       console.log(data)
       setMsgs((m) => [...m, { role: "ai", data }]);
     } catch (e) {
-      setMsgs((m) => [...m, { role: "error", text: `Could not reach the Verdict server at this moment. We are trying to reconenct. Please try again after few seconds. (${(e as Error).message})` }]);
+      setMsgs((m) => [...m, { role: "error", text: `Could not reach the Verdict server at this moment. We are trying to reconnect. Please try again after few seconds. (${(e as Error).message})` }]);
     } finally {
       setBusy(false);
     }
@@ -91,7 +139,7 @@ export default function Ask() {
         </header>
       </div>
       <div className="flex-1 space-y-8 pb-40">
-        {msgs.length === 0 && (
+        {loaded && msgs.length === 0 && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="pt-10">
             <h1 className="font-serif text-5xl sm:text-6xl">What do you want to know about Indian law?</h1>
             <div className="mt-10 grid gap-5 sm:grid-cols-2">
